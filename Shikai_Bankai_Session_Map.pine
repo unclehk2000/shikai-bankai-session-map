@@ -1,0 +1,782 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Unclehk2000
+//@version=6
+indicator("Shikai / Bankai Session Map", "SB Map", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+tz = "America/New_York"
+
+// ═══════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════
+var g_D = "View"
+themeI   = input.string("Auto", "Card theme", options = ["Auto", "Dark", "Light"], group = g_D, tooltip = "The card. Auto follows the chart background. Its text always follows this theme, so it stays readable whatever chart text colour you pick.", display = display.none)
+layoutI  = input.string("Desktop", "Layout", options = ["Desktop", "Mobile"], group = g_D, tooltip = "Mobile folds the card to four rows in the narrower default font for a phone; the rest stays in the tooltips. Chart layouts sync across devices, so keep a separate chart layout for the phone.", display = display.none)
+showCard = input.bool(true, "Card", inline = "cd", group = g_D, display = display.none)
+cardPos  = input.string("Bottom left", "", options = ["Top left", "Top center", "Top right", "Middle left", "Middle right", "Bottom left", "Bottom center", "Bottom right"], inline = "cd", group = g_D, tooltip = "Bottom left keeps the card clear of the session candles, which sit right of price.", display = display.none)
+cardSzI  = input.string("Small", "Card text", options = ["Tiny", "Small", "Normal"], group = g_D, display = display.none)
+lblSize  = input.string("Small", "Chart text size", options = ["Tiny", "Small", "Normal"], group = g_D, display = display.none)
+txtColI  = input.color(#000001, "Chart text colour", group = g_D, tooltip = "The labels on the chart. Left at the default it follows the chart background; pick any colour to override. The card keeps its own text colour.", display = display.none)
+dateFmt = input.string("HH:mm MM/dd", "Label date format", group = g_D, display = display.none)
+extMode = input.string("To last candle", "Line length", options = ["To last candle", "Until its watch window ends"], tooltip = "Midpoint-map lines stay inside their own trading day. Only today's lines run to the last candle.", group = g_D, display = display.none)
+maxDays = input.int(3, "Days to keep", minval = 1, group = g_D, display = display.none)
+ageDays = input.int(5, "Fresh for first N trading days", minval = 1, group = g_D, display = display.none)
+agedCol = input.color(color.gray, "Aged colour", group = g_D, display = display.none)
+
+var g_M = "Mode"
+mode      = input.string("Shikai — all-day map", "Mode", options = ["Shikai — all-day map", "Bankai — NY AM program"], group = g_M, tooltip = "Shikai: the overnight midpoint map for the whole day (09:30 → 16:59 close), with hot-block midpoints.\nBankai: the same midpoint as a time-bound NY AM program (09:30 → hard stop), with the entry windows shaded.", display = display.none)
+isBankai  = mode == "Bankai — NY AM program"
+
+var g_S = "Shikai / Bankai sessions (ET)"
+onSess  = input.session("1800-0930", "Overnight range (18:00 → 09:29)", group = g_S, display = display.none)
+shkSess = input.session("0930-1700", "Shikai watch window (09:30 → 16:59 close)", group = g_S, display = display.none)
+nySess  = input.session("0930-1100", "Bankai program (hard stop at the end)", group = g_S, display = display.none)
+primWin = input.session("0931-0941", "Bankai primary window", inline = "p", group = g_S, display = display.none)
+colPrim = input.color(color.new(color.green, 85), "", inline = "p", group = g_S, display = display.none)
+secWin  = input.session("0941-1000", "Bankai secondary window", inline = "s", group = g_S, display = display.none)
+colSec  = input.color(color.new(color.green, 93), "", inline = "s", group = g_S, display = display.none)
+
+var g_L = "Midpoint map"
+showON    = input.bool(true, "Overnight high / low", inline = "on", group = g_L, display = display.none)
+colON     = input.color(color.gray, "", inline = "on", group = g_L, display = display.none)
+colMid    = input.color(#ff9800, "Midpoint colour", group = g_L, display = display.none)
+showMir   = input.bool(true, "Mirror level", inline = "mr", group = g_L, tooltip = "The same distance from the 09:30 open as the midpoint, on the other side of the open: the placebo the midpoint is tested against, and the carry foothold on discount opens (see the card's MIRROR row).", display = display.none)
+colMir    = input.color(color.new(color.gray, 20), "", inline = "mr", group = g_L, display = display.none)
+
+var g_HB = "Hot-block midpoints (Shikai)"
+blockLen = input.int(30, "Block length (minutes)", minval = 5, group = g_HB, display = display.none)
+hbAsia   = input.session("2000-0000", "Asia", inline = "ha", group = g_HB, display = display.none)
+showHA   = input.bool(true, "", inline = "ha", group = g_HB, display = display.none)
+colHA    = input.color(color.purple, "", inline = "ha", group = g_HB, display = display.none)
+hbLdn    = input.session("0200-0500", "London", inline = "hl", group = g_HB, display = display.none)
+showHL   = input.bool(true, "", inline = "hl", group = g_HB, display = display.none)
+colHL    = input.color(color.red, "", inline = "hl", group = g_HB, display = display.none)
+hbPM     = input.session("1330-1600", "NY PM", inline = "hp", group = g_HB, display = display.none)
+showHP   = input.bool(true, "", inline = "hp", group = g_HB, display = display.none)
+colHP    = input.color(#00897b, "", inline = "hp", group = g_HB, display = display.none)
+
+var g_C = "Intraday markers"
+showInto = input.bool(true, "Mark the 'into the midpoint' side at 09:30", group = g_C, display = display.none)
+colLong  = input.color(color.green, "Long", inline = "cc", group = g_C, display = display.none)
+colShort = input.color(color.red, "Short", inline = "cc", group = g_C, display = display.none)
+showRecl = input.bool(true, "Mark go-through-and-reclaim at the midpoint", group = g_C, display = display.none)
+
+var g_SC = "Session candles"
+showCandles = input.bool(true, "Show session candles (right of price)", group = g_SC, display = display.none)
+cAsiaSess   = input.session("1800-0000", "Asia candle", group = g_SC, display = display.none)
+cALSess     = input.session("0000-0200", "Asia → London candle", group = g_SC, display = display.none)
+cLonSess    = input.session("0200-0500", "London candle", group = g_SC, display = display.none)
+cLNSess     = input.session("0500-0800", "London → NY candle", group = g_SC, display = display.none)
+cNySess     = input.session("0800-1700", "NY candle", group = g_SC, display = display.none)
+showTrans   = input.bool(true, "Show the two transition candles", group = g_SC, display = display.none)
+cOffset     = input.int(15, "Offset from chart (bars)", minval = 1, group = g_SC, display = display.none)
+cWidth      = input.int(4, "Candle width (bars)", minval = 1, maxval = 20, group = g_SC, display = display.none)
+cSpacing    = input.int(6, "Spacing between candles", minval = 1, maxval = 20, group = g_SC, display = display.none)
+colCandleI  = input.color(#000001, "Candle colour", inline = "cc2", group = g_SC, display = display.none)
+bodyTransp  = input.int(85, "Body transparency", minval = 0, maxval = 100, inline = "cc2", group = g_SC, display = display.none)
+showWick    = input.bool(true, "Wicks", inline = "w", group = g_SC, display = display.none)
+showHLlbl   = input.bool(true, "High / low prices", inline = "w", group = g_SC, display = display.none)
+show25tick  = input.bool(true, "25% tick (Asia, London, NY candles)", inline = "w", group = g_SC, display = display.none)
+show25line  = input.bool(true, "Asia / London 25% lines on chart", inline = "25", group = g_SC, display = display.none)
+col25       = input.color(color.blue, "", inline = "25", group = g_SC, display = display.none)
+show375     = input.bool(true, "37.5% (lines and ticks)", inline = "375", group = g_SC, display = display.none)
+col375      = input.color(#5c6bc0, "", inline = "375", group = g_SC, display = display.none)
+show50tick  = input.bool(true, "50% tick (Asia, London, NY candles)", inline = "50t", group = g_SC, display = display.none)
+show50line  = input.bool(true, "Asia / London 50% lines on chart", inline = "50", group = g_SC, display = display.none)
+col50       = input.color(#ab47bc, "", inline = "50", group = g_SC, display = display.none)
+lvlMode     = input.string("Range · from the last extreme", "25 / 37.5 / 50% of", options = ["Range · from the last extreme", "Body (open–close)"], group = g_SC, tooltip = "Range: retracement levels of the session's high–low, measured from whichever extreme came last. A session that made its high first and its low later is measured up from the low (25% = low + a quarter of the range). They move only when the session makes a new high or low, so they hold still while price trades inside the range.\nBody: a share of the open–close body back from the close. It moves with every tick while the session is open.", display = display.none)
+showHMLO    = input.bool(false, "Asia / London H/M/L/O lines", inline = "hm", group = g_SC, display = display.none)
+colHMLO     = input.color(color.new(color.gray, 30), "", inline = "hm", group = g_SC, display = display.none)
+showVline   = input.bool(true, "Session open lines", inline = "vl", group = g_SC, display = display.none)
+colVlineI   = input.color(#000001, "", inline = "vl", group = g_SC, display = display.none)
+
+// Theme: Auto follows the chart background; colours left at their default (#000001) follow it
+bgLum  = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)
+isDark = themeI == "Dark" or (themeI == "Auto" and bgLum < 128)      // the card
+autoC(color c) => color.r(c) == 0 and color.g(c) == 0 and color.b(c) == 1
+fgAuto = bgLum < 128 ? #d1d4dc : #131722                              // the chart: follows the chart background
+txtCol = autoC(txtColI) ? fgAuto : txtColI
+colCandle = autoC(colCandleI) ? fgAuto : colCandleI
+colVline  = autoC(colVlineI) ? color.new(fgAuto, 70) : colVlineI
+cTxt  = isDark ? #d1d4dc : #131722
+cBody = isDark ? #161a23 : #f4f6f9
+cSub  = isDark ? #8a93a6 : #5d6476
+lumOf(color c) => 0.299 * color.r(c) + 0.587 * color.g(c) + 0.114 * color.b(c)
+hdrTx(color c) => lumOf(c) > 165 ? #131722 : #ffffff
+
+
+if not timeframe.isintraday or timeframe.in_seconds() > 15 * 60
+    runtime.error("Use an intraday chart of 15 minutes or less (1 min recommended for the Bankai windows).")
+
+tSize = lblSize == "Tiny" ? size.tiny : lblSize == "Normal" ? size.normal : size.small
+stampOf(int t) => str.format_time(t, dateFmt, tz)
+hhmm(int t) => str.format_time(t, "HH:mm", tz)
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION FLAGS
+// ═══════════════════════════════════════════════════════════════════
+sessOn(string s) => not na(time(timeframe.period, s, tz))
+inON   = sessOn(onSess)
+inShk  = sessOn(shkSess)
+inNY   = sessOn(nySess)
+inPrim = sessOn(primWin)
+inSec  = sessOn(secWin)
+inHA   = sessOn(hbAsia)
+inHL   = sessOn(hbLdn)
+inHP   = sessOn(hbPM)
+inCA   = sessOn(cAsiaSess)
+inCAL  = sessOn(cALSess)
+inCL   = sessOn(cLonSess)
+inCLN  = sessOn(cLNSess)
+inCN   = sessOn(cNySess)
+
+onStart = inON and not inON[1]
+onEnd   = not inON and inON[1]
+shkEnd   = not inShk and inShk[1]
+nyEnd    = not inNY and inNY[1]
+haStart = inHA and not inHA[1]
+haEnd   = not inHA and inHA[1]
+hlStart = inHL and not inHL[1]
+hlEnd   = not inHL and inHL[1]
+hpStart = inHP and not inHP[1]
+hpEnd   = not inHP and inHP[1]
+caStart = inCA and not inCA[1]
+calStart = inCAL and not inCAL[1]
+clStart = inCL and not inCL[1]
+clnStart = inCLN and not inCLN[1]
+cnStart = inCN and not inCN[1]
+prevClose = close[1]
+
+var int dayCount = 0
+if onStart
+    dayCount += 1
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION CANDLES — OHLC per session, tagged with the trading day
+// ═══════════════════════════════════════════════════════════════════
+type Sess
+    float o
+    float h
+    float l
+    float c
+    int   t0
+    int   day
+    int   tH       // time of the session high
+    int   tL       // time of the session low
+
+var Sess sA = Sess.new()
+var Sess sAL = Sess.new()
+var Sess sL = Sess.new()
+var Sess sLN = Sess.new()
+var Sess sN = Sess.new()
+
+// Shikai / Bankai day record
+var float sbO   = na
+var float sbMid = na
+var bool  sbUp  = false
+var int   sbDay = na
+var int   sbT930 = na
+var int   midT  = -1
+var bool  mid11 = false
+var float sbMir = na      // the mirror: the midpoint's distance from the open, on the other side
+var int   mirT  = -1
+var int   lhT   = na      // London high / low taken after 05:00, and the London 25% traded
+var int   llT   = na
+var int   q25T  = na
+
+trackS(Sess s, bool inS, bool sStart) =>
+    if sStart
+        s.o   := open
+        s.h   := high
+        s.l   := low
+        s.c   := close
+        s.t0  := time
+        s.day := dayCount
+        s.tH  := time
+        s.tL  := time
+    else if inS and not na(s.o)
+        if high > s.h
+            s.h  := high
+            s.tH := time
+        if low < s.l
+            s.l  := low
+            s.tL := time
+        s.c := close
+
+trackS(sA, inCA, caStart)
+trackS(sAL, inCAL, calStart)
+trackS(sL, inCL, clStart)
+trackS(sLN, inCLN, clnStart)
+trackS(sN, inCN, cnStart)
+
+float adrD = request.security(ticker.modify(syminfo.tickerid, backadjustment = backadjustment.off), "D", ta.sma(high - low, 20)[1], lookahead = barmerge.lookahead_on)
+
+isBody = lvlMode == "Body (open–close)"
+// the session's leg: down when its high came first and its low later (body mode: closed below the open)
+legDown(Sess s) => isBody ? s.c < s.o : (s.tH < s.tL or (s.tH == s.tL and s.c < s.o))
+// k of the range back from the last extreme (k = 0.25, 0.375, 0.5); body mode: k of the body back from the close
+lvlK(Sess s, float k) =>
+    float out = na
+    if isBody
+        bt = math.max(s.o, s.c)
+        bb = math.min(s.o, s.c)
+        br = bt - bb
+        out := br > 0 ? (s.c >= s.o ? bt - k * br : bb + k * br) : (bt + bb) / 2
+    else
+        out := legDown(s) ? s.l + k * (s.h - s.l) : s.h - k * (s.h - s.l)
+    out
+
+regimeOf(float ah, float al, float lh, float ll) =>
+    lh > ah and ll < al ? "London engulfs Asia" : ah >= lh and al <= ll ? "Asia engulfs London" : lh > ah ? "London partial up" : ll < al ? "London partial down" : "Inside"
+
+// ── Session open vertical lines ──
+var array<line>  vLn = array.new<line>()
+var array<label> vLb = array.new<label>()
+vMark(bool cond, string nm) =>
+    if cond and showVline
+        vLn.push(line.new(bar_index, high, bar_index, low, color = colVline, extend = extend.both, xloc = xloc.bar_index))
+        vLb.push(label.new(bar_index, high, nm, xloc = xloc.bar_index, style = label.style_label_down, color = colVline, textcolor = txtCol, size = size.tiny))
+        if vLn.size() > 3 * maxDays
+            vLn.shift().delete()
+            vLb.shift().delete()
+vMark(caStart, "Asia")
+vMark(calStart and showTrans, "Asia→Ldn")
+vMark(clStart, "London")
+vMark(clnStart and showTrans, "Ldn→NY")
+vMark(cnStart, "NY")
+
+// ═══════════════════════════════════════════════════════════════════
+// LEVEL STORE (Shikai / Bankai)
+// ═══════════════════════════════════════════════════════════════════
+type Lv
+    line   ln
+    label  lb
+    float  y
+    bool   above
+    string kind      // "ON" (midpoint map), "Asia", "London", "NY PM" (hot blocks)
+    int    day
+    bool   hit
+    bool   live
+    string tag       // "mid", "lvl"
+    string tx        // the label's own text (labels at nearly the same price are merged on the last bar)
+
+var array<Lv>    store = array.new<Lv>()
+var array<label> evLbl = array.new<label>()
+var array<int>   evDay = array.new<int>()
+
+mkLv(int t0, float y, color col, int w, string st, string txt, string kind, bool above, string tag) =>
+    lv = Lv.new(line.new(t0, y, time, y, xloc = xloc.bar_time, color = col, style = st, width = w), label.new(time, y, txt, xloc = xloc.bar_time, style = label.style_label_left, color = #ffffff00, textcolor = txtCol, size = tSize), y, above, kind, dayCount, false, true, tag, txt)
+    store.push(lv)
+    lv
+
+mkEvent(float y, string txt, color col, bool above) =>
+    evLbl.push(label.new(time, y, txt, xloc = xloc.bar_time, style = above ? label.style_label_down : label.style_label_up, color = color.new(col, 80), textcolor = txtCol, size = tSize))
+    evDay.push(dayCount)
+
+if onStart
+    while store.size() > 0 and store.get(0).day <= dayCount - maxDays
+        lv = store.shift()
+        lv.ln.delete()
+        lv.lb.delete()
+    while evDay.size() > 0 and evDay.get(0) <= dayCount - maxDays
+        evLbl.shift().delete()
+        evDay.shift()
+
+// ═══════════════════════════════════════════════════════════════════
+// OVERNIGHT RANGE → MIDPOINT MAP AT 09:30
+// ═══════════════════════════════════════════════════════════════════
+var float oO = na
+var float oH = na
+var float oL = na
+var int   oHt = na
+var int   oLt = na
+if onStart
+    oO := open
+    oH := high
+    oL := low
+    oHt := time
+    oLt := time
+else if inON
+    if high > oH
+        oH := high
+        oHt := time
+    if low < oL
+        oL := low
+        oLt := time
+
+var Lv    midLv     = na
+var bool  bankaiOn  = false
+var bool  midHit    = false
+var bool  fromAbove = false
+var bool  thru      = false
+var bool  rcDone    = false
+
+if onEnd and not na(oH)
+    O      = open
+    mid    = (oH + oL) / 2
+    up     = mid > O
+    // day record for the stats
+    sbO := O
+    sbMid := mid
+    sbUp := up
+    sbDay := dayCount
+    sbT930 := time
+    midT := -1
+    mid11 := false
+    sbMir := 2 * O - mid
+    mirT := -1
+    // drawing state
+    midHit    := false
+    bankaiOn  := isBankai
+    fromAbove := not up
+    thru      := false
+    rcDone    := false
+    t0 = math.min(oHt, oLt)
+    if showON
+        mkLv(oHt, oH, colON, 1, line.style_solid, stampOf(oHt) + " ON high", "ON", true, "lvl")
+        mkLv(oLt, oL, colON, 1, line.style_solid, stampOf(oLt) + " ON low", "ON", false, "lvl")
+    midLv := mkLv(t0, mid, colMid, 2, line.style_solid, stampOf(time) + (isBankai ? " Bankai mid" : " Shikai mid"), "ON", up, "mid")
+    if showMir
+        mkLv(time, 2 * O - mid, colMir, 1, line.style_dotted, stampOf(time) + " mirror", "ON", not up, "mir")
+    if showInto
+        mkEvent(up ? low : high, up ? "▲ Into mid: LONG" : "▼ Into mid: SHORT", up ? colLong : colShort, not up)
+
+// ── Stats tracking for today (09:30 → 16:59) ──
+if inShk and sbDay == dayCount and not na(sbMid)
+    m    = int((time - sbT930) / 60000)
+    tMid = sbUp ? high >= sbMid : low <= sbMid
+    if midT < 0 and tMid
+        midT  := m
+        mid11 := inNY
+    if mirT < 0 and (sbUp ? low <= sbMir : high >= sbMir)
+        mirT := m
+
+// ── London high / low taken after 05:00, and the London 25% traded (from 05:00 to 16:59)
+if onStart
+    lhT  := na
+    llT  := na
+    q25T := na
+if not na(sL.o) and sL.day == dayCount and not inCL and (inON or inShk)
+    if na(lhT) and high > sL.h
+        lhT := time
+    if na(llT) and low < sL.l
+        llT := time
+    if na(q25T) and sL.h > sL.l and high >= lvlK(sL, 0.25) and low <= lvlK(sL, 0.25)
+        q25T := time
+
+// ═══════════════════════════════════════════════════════════════════
+// HOT-BLOCK MIDPOINTS (Shikai)
+// ═══════════════════════════════════════════════════════════════════
+hotBlock(bool inS, bool sStart, int blk) =>
+    var int   t0   = na
+    var int   curK = 0
+    var float cH   = na
+    var float cL   = na
+    var int   cT   = na
+    var float best = na
+    var float bMid = na
+    var int   bT   = na
+    bool isNew = false
+    if sStart
+        t0   := time
+        curK := 0
+        cH   := high
+        cL   := low
+        cT   := time
+        best := na
+        bMid := na
+        bT   := na
+    else if inS and not na(t0)
+        k = int((time - t0) / (blk * 60000))
+        if k != curK
+            r = cH - cL
+            if na(best) or r > best
+                best  := r
+                bMid  := (cH + cL) / 2
+                bT    := cT
+                isNew := true
+            curK := k
+            cH   := high
+            cL   := low
+            cT   := time
+        else
+            cH := math.max(cH, high)
+            cL := math.min(cL, low)
+    [bMid, bT, isNew]
+
+updHot(Lv cur, float mid, int t0, string kind, string nm, color col, int rate, bool above) =>
+    Lv r = cur
+    txt = stampOf(t0) + " " + nm + " hot-block mid"
+    bool reuse = not na(r) and r.day == dayCount
+    if not reuse
+        r := mkLv(t0, mid, col, 1, line.style_solid, txt, kind, above, "lvl")
+    if reuse
+        r.ln.set_xy1(t0, mid)
+        r.ln.set_xy2(time, mid)
+        r.ln.set_style(line.style_solid)
+        r.lb.set_xy(time, mid)
+        r.lb.set_text(txt)
+        r.tx    := txt
+        r.y     := mid
+        r.above := above
+        r.hit   := false
+        r.live  := true
+    r
+
+[aMid, aT, aNew] = hotBlock(inHA, haStart, blockLen)
+[lMid, lT, lNew] = hotBlock(inHL, hlStart, blockLen)
+[pMid, pT, pNew] = hotBlock(inHP, hpStart, blockLen)
+
+var Lv hbA = na
+var Lv hbL = na
+var Lv hbP = na
+if not isBankai
+    if aNew and showHA
+        hbA := updHot(hbA, aMid, aT, "Asia", "Asia", colHA, 70, aMid > prevClose)
+    if lNew and showHL
+        hbL := updHot(hbL, lMid, lT, "London", "London", colHL, 63, lMid > prevClose)
+    if pNew and showHP
+        hbP := updHot(hbP, pMid, pT, "NY PM", "NY PM", colHP, 71, pMid > prevClose)
+
+// ═══════════════════════════════════════════════════════════════════
+// EVERY BAR: grow, touches, retire, age
+// ═══════════════════════════════════════════════════════════════════
+watching(string kind) => kind == "ON" ? (isBankai ? inNY : inShk) : kind == "Asia" ? inHA : kind == "London" ? inHL : inHP
+windowEnd(string kind) => kind == "ON" ? (isBankai ? nyEnd : shkEnd) : kind == "Asia" ? haEnd : kind == "London" ? hlEnd : hpEnd
+
+nS = store.size()
+if nS > 0
+    for i = 0 to nS - 1
+        lv = store.get(i)
+        if lv.live and lv.day != dayCount
+            lv.live := false          // a past trading day: its lines stop where that day ended
+        if lv.live
+            lv.ln.set_x2(time)
+            lv.lb.set_x(time)
+        if not lv.hit and lv.day == dayCount and watching(lv.kind) and (lv.above ? high >= lv.y : low <= lv.y)
+            lv.hit := true
+            lv.ln.set_style(line.style_dashed)
+            if lv.tag == "mid"
+                midHit := true
+                mins = int((time - sbT930) / 60000)
+                txt  = isBankai ? "Bankai ✓ mid hit " + hhmm(time) + " · " + str.tostring(mins) + " min" : "Shikai mid hit " + hhmm(time) + " · " + str.tostring(mins) + " min"
+                mkEvent(lv.y, txt, colMid, lv.above)
+        if extMode != "To last candle" and lv.live and lv.day == dayCount and windowEnd(lv.kind)
+            lv.live := false
+        if dayCount - lv.day >= ageDays
+            lv.ln.set_color(agedCol)
+            lv.lb.set_textcolor(color.gray)
+nE = evLbl.size()
+if nE > 0
+    for i = 0 to nE - 1
+        if dayCount - evDay.get(i) >= ageDays
+            evLbl.get(i).set_color(color.new(agedCol, 85))
+            evLbl.get(i).set_textcolor(color.gray)
+
+// ── Through the midpoint, then a close back = reclaim (reversal out of the level) ──
+inWin = isBankai ? inNY : inShk
+if showRecl and midHit and not rcDone and inWin and not na(sbMid) and sbDay == dayCount
+    thru := thru or (fromAbove ? low < sbMid : high > sbMid)
+    if thru and (fromAbove ? close > sbMid : close < sbMid)
+        rcDone := true
+        tR     = (fromAbove ? "↺ Mid reclaim: LONG " : "↺ Mid reclaim: SHORT ") + hhmm(time)
+        mkEvent(fromAbove ? low : high, tR, color.gray, not fromAbove)
+
+// ── Bankai: windows and hard stop ──
+if nyEnd and bankaiOn
+    if not midHit and not na(midLv)
+        mkEvent(midLv.y, "Bankai over · mid not reached", color.gray, midLv.above)
+    bankaiOn := false
+
+bgcolor(bankaiOn and not midHit and inPrim ? colPrim : na, title = "Bankai primary window")
+bgcolor(bankaiOn and not midHit and inSec ? colSec : na, title = "Bankai secondary window")
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION CANDLES + 25% / H-M-L-O LINES (redrawn on the last bar)
+// ═══════════════════════════════════════════════════════════════════
+var array<box>   cBx = array.new<box>()
+var array<line>  cLn = array.new<line>()
+var array<label> cLb = array.new<label>()
+var array<label> sLb = array.new<label>()     // session-line labels at the last bar, for the merge
+var array<float> sLy = array.new<float>()
+
+// a label prints on its own, or joins the label already within `thr` of it
+placeLbl(label lb, float y, string tx, array<float> sY, array<label> sLs, float thr) =>
+    int jm = -1
+    for [j, yy] in sY
+        if jm < 0 and math.abs(yy - y) <= thr
+            jm := j
+    if jm >= 0
+        sLs.get(jm).set_text(sLs.get(jm).get_text() + "\n" + tx)
+        lb.set_text("")
+    else
+        lb.set_text(tx)
+        sY.push(y)
+        sLs.push(lb)
+
+drawCandle(Sess s, int x1, int x2, string nm, bool lvls) =>
+    bt   = math.max(s.o, s.c)
+    bb   = math.min(s.o, s.c)
+    xm   = int(math.round((x1 + x2) / 2))
+    cBx.push(box.new(x1, bt, x2, bb, xloc = xloc.bar_index, bgcolor = color.new(colCandle, bodyTransp), border_color = colCandle, border_width = 1))
+    if showWick and s.h > bt
+        cLn.push(line.new(xm, bt, xm, s.h, xloc = xloc.bar_index, color = colCandle))
+    if showWick and s.l < bb
+        cLn.push(line.new(xm, bb, xm, s.l, xloc = xloc.bar_index, color = colCandle))
+    // name and high price share one stacked label above the candle, so they can't overlap
+    topTxt = showHLlbl ? nm + "\n" + str.tostring(s.h, format.mintick) : nm
+    cLb.push(label.new(xm, s.h, topTxt, xloc = xloc.bar_index, style = label.style_label_down, color = color.new(colCandle, 90), textcolor = colCandle, size = size.tiny, textalign = text.align_center))
+    if showHLlbl
+        cLb.push(label.new(xm, s.l, str.tostring(s.l, format.mintick), xloc = xloc.bar_index, style = label.style_label_up, color = #ffffff00, textcolor = colCandle, size = size.tiny))
+    if lvls and show25tick and s.h > s.l
+        q = lvlK(s, 0.25)
+        cLn.push(line.new(x2, q, x2 + cSpacing, q, xloc = xloc.bar_index, color = col25))
+        cLb.push(label.new(x2 + cSpacing, q, "25%", xloc = xloc.bar_index, style = label.style_label_left, color = #ffffff00, textcolor = col25, size = size.tiny))
+    if lvls and show375 and s.h > s.l
+        q3 = lvlK(s, 0.375)
+        cLn.push(line.new(x2, q3, x2 + cSpacing, q3, xloc = xloc.bar_index, color = col375))
+        cLb.push(label.new(x2 + cSpacing, q3, "37.5%", xloc = xloc.bar_index, style = label.style_label_left, color = #ffffff00, textcolor = col375, size = size.tiny))
+    if lvls and show50tick
+        h50 = lvlK(s, 0.5)
+        cLn.push(line.new(x2, h50, x2 + cSpacing, h50, xloc = xloc.bar_index, color = col50))
+        cLb.push(label.new(x2 + cSpacing, h50, "50%", xloc = xloc.bar_index, style = label.style_label_left, color = #ffffff00, textcolor = col50, size = size.tiny))
+
+drawSessLines(Sess s, string nm) =>
+    if show25line and s.h > s.l
+        q = lvlK(s, 0.25)
+        cLn.push(line.new(s.t0, q, time, q, xloc = xloc.bar_time, color = col25))
+        cLb.push(label.new(time, q, stampOf(s.t0) + " " + nm + " 25%", xloc = xloc.bar_time, style = label.style_label_left, color = #ffffff00, textcolor = col25, size = tSize))
+        sLb.push(cLb.last())
+        sLy.push(q)
+    if show375 and s.h > s.l
+        q3 = lvlK(s, 0.375)
+        cLn.push(line.new(s.t0, q3, time, q3, xloc = xloc.bar_time, color = col375, style = line.style_dashed))
+        cLb.push(label.new(time, q3, stampOf(s.t0) + " " + nm + " 37.5%", xloc = xloc.bar_time, style = label.style_label_left, color = #ffffff00, textcolor = col375, size = tSize))
+        sLb.push(cLb.last())
+        sLy.push(q3)
+    if show50line
+        h50 = lvlK(s, 0.5)
+        cLn.push(line.new(s.t0, h50, time, h50, xloc = xloc.bar_time, color = col50))
+        cLb.push(label.new(time, h50, stampOf(s.t0) + " " + nm + " 50%", xloc = xloc.bar_time, style = label.style_label_left, color = #ffffff00, textcolor = col50, size = tSize))
+        sLb.push(cLb.last())
+        sLy.push(h50)
+    if showHMLO
+        for j = 0 to 3
+            y  = j == 0 ? s.h : j == 1 ? (s.h + s.l) / 2 : j == 2 ? s.l : s.o
+            tx = j == 0 ? " High" : j == 1 ? " Mid" : j == 2 ? " Low" : " Open"
+            cLn.push(line.new(s.t0, y, time, y, xloc = xloc.bar_time, color = colHMLO, style = line.style_dotted))
+            cLb.push(label.new(time, y, nm + tx, xloc = xloc.bar_time, style = label.style_label_left, color = #ffffff00, textcolor = colHMLO, size = tSize))
+
+if barstate.islast
+    while cBx.size() > 0
+        cBx.pop().delete()
+    while cLn.size() > 0
+        cLn.pop().delete()
+    while cLb.size() > 0
+        cLb.pop().delete()
+    sLb.clear()
+    sLy.clear()
+    showA  = not na(sA.o) and sA.day == dayCount
+    showAL = showTrans and not na(sAL.o) and sAL.day == dayCount
+    showL  = not na(sL.o) and sL.day == dayCount
+    showLN = showTrans and not na(sLN.o) and sLN.day == dayCount
+    showN  = not na(sN.o) and sN.day == dayCount
+    if showCandles
+        step = cWidth + cSpacing
+        x    = bar_index + cOffset
+        if showA
+            drawCandle(sA, x, x + cWidth, "Asia", true)
+        x += step
+        if showTrans
+            if showAL
+                drawCandle(sAL, x, x + cWidth, "Asia→Ldn", false)
+            x += step
+        if showL
+            drawCandle(sL, x, x + cWidth, "London", true)
+        x += step
+        if showTrans
+            if showLN
+                drawCandle(sLN, x, x + cWidth, "Ldn→NY", false)
+            x += step
+        if showN
+            drawCandle(sN, x, x + cWidth, "NY", true)
+    if showA
+        drawSessLines(sA, "Asia")
+    if showL
+        drawSessLines(sL, "London")
+    // labels within 2.5% of ADR20 of each other share one label, stacked, so they never print over each other
+    float thr = 0.025 * nz(adrD, 0)
+    array<float> mY = array.new<float>()
+    array<label> mL = array.new<label>()
+    for lv in store
+        if lv.live and lv.day == dayCount
+            placeLbl(lv.lb, lv.y, lv.tx, mY, mL, thr)
+    for [j, l] in sLb
+        placeLbl(l, sLy.get(j), l.get_text(), mY, mL, thr)
+
+// ═══════════════════════════════════════════════════════════════════
+// CARD
+// ═══════════════════════════════════════════════════════════════════
+// Odds: NQ + ES + RTY 1-minute 2018–26, 6,344 days. Distance = |09:30 open − overnight midpoint| ÷ ADR20 (the mean
+// 18:00–17:00 range of the last 20 days). Columns: < 0.05, 0.05–0.1, 0.1–0.2, 0.2–0.35, 0.35+ ADR (21 / 21 / 31 / 20 / 8%
+// of days). Rows: minutes after 09:30. Cells: % reached by the window's end (16:59 Shikai, 11:00 Bankai), given not
+// reached by then. A = the level sits above the open, B = below; M = the overnight midpoint, R = its mirror (placebo).
+// Steady in 2018–24 and 2025–26 and on each symbol.
+// L11 / L17: the London high, low taken by 11:00 / 16:59, given not taken by the row's time (minutes from midnight).
+var array<int> CKS = array.from(0, 15, 30, 45, 60, 90, 120, 180, 240, 300, 360, 420)
+var array<int> CKB = array.from(0, 5, 10, 15, 20, 30, 45, 60, 75)
+var array<int> CKL = array.from(300, 480, 570, 600, 630, 660, 720, 780, 840, 900, 960)
+parseNum(string s) =>
+    out = array.new<float>()
+    for x in str.split(s, ",")
+        out.push(str.tonumber(x))
+    out
+var array<float> SHMA = parseNum("94,89,74,67,57,62,70,58,60,52,54,60,49,53,48,47,53,43,45,44,44,48,38,42,41,38,44,32,36,33,36,40,27,31,30,29,32,20,25,25,19,18,14,17,14,11,13,10,10,10,7,7,6,5,7,2,1,0,0,1")
+var array<float> SHMB = parseNum("94,87,73,58,48,64,70,59,51,45,55,62,51,45,43,48,54,43,39,40,40,48,38,35,37,38,41,30,30,30,34,36,26,25,24,24,28,20,20,17,20,19,13,9,8,10,12,7,5,5,6,5,3,2,1,0,1,1,0,0")
+var array<float> SHRA = parseNum("96,85,75,57,40,73,62,63,50,38,66,53,56,44,35,56,48,50,37,32,55,44,46,32,29,47,33,41,27,26,38,28,34,22,23,31,23,26,16,18,22,20,19,14,13,14,14,12,9,10,7,8,7,5,6,0,1,1,0,1")
+var array<float> SHRB = parseNum("96,87,76,56,49,67,66,60,47,47,62,57,52,39,45,55,50,44,33,38,53,43,41,28,33,46,34,33,23,30,41,30,28,18,25,37,23,23,13,15,27,16,18,11,13,16,11,10,8,11,10,8,6,3,5,0,2,0,0,3")
+var array<float> BKMA = parseNum("90,80,61,49,36,55,62,51,46,34,44,51,44,42,31,39,47,38,38,29,33,40,33,35,26,25,29,25,26,22,14,16,15,15,16,10,8,9,9,11,5,6,5,4,4")
+var array<float> BKMB = parseNum("90,78,61,40,26,58,62,54,38,26,47,54,46,35,24,42,49,41,31,22,34,43,37,27,21,29,35,29,22,19,17,21,18,13,15,4,11,11,7,10,0,5,5,5,7")
+var array<float> BKRA = parseNum("93,77,58,41,19,68,59,49,39,19,59,49,42,35,18,49,43,38,31,17,43,38,33,28,16,36,30,27,22,13,18,22,17,14,9,15,15,10,7,4,2,7,4,2,2")
+var array<float> BKRB = parseNum("92,79,64,43,27,60,62,54,40,27,48,54,46,35,25,39,48,40,31,24,35,43,35,27,23,30,35,28,21,21,17,23,16,13,12,14,14,12,7,5,4,7,6,2,2")
+var array<float> L11 = parseNum("75,71,53,52,39,40,19,20,7,9,0,0,0,0,0,0,0,0,0,0,0,0")
+var array<float> L17 = parseNum("83,79,67,65,58,56,44,41,35,33,30,26,22,19,17,15,13,10,7,6,2,2")
+distB(float d) => d < 0.05 ? 0 : d < 0.1 ? 1 : d < 0.2 ? 2 : d < 0.35 ? 3 : 4
+// a table of nc columns, one row per checkpoint; linear between checkpoints
+oddsAt(array<float> tb, array<int> ck, int nc, int b, float mins) =>
+    int   n   = ck.size()
+    float out = na
+    if mins >= ck.get(0)
+        int i = 0
+        while i < n - 1 and ck.get(i + 1) <= mins
+            i += 1
+        if i >= n - 1
+            out := tb.get((n - 1) * nc + b)
+        else
+            float f = (mins - ck.get(i)) / (ck.get(i + 1) - ck.get(i))
+            out := tb.get(i * nc + b) * (1 - f) + tb.get((i + 1) * nc + b) * f
+    out
+// the midpoint (isMid) or its mirror, sitting above or below the open
+reachOdds(bool isMid, bool above, int b, float mins) =>
+    array<float> tb = isBankai ? (isMid ? (above ? BKMA : BKMB) : (above ? BKRA : BKRB)) : (isMid ? (above ? SHMA : SHMB) : (above ? SHRA : SHRB))
+    oddsAt(tb, isBankai ? CKB : CKS, 5, b, mins)
+
+cSz = cardSzI == "Tiny" ? size.tiny : cardSzI == "Normal" ? size.normal : size.small
+posOf(string p) =>
+    switch p
+        "Top left"      => position.top_left
+        "Top center"    => position.top_center
+        "Top right"     => position.top_right
+        "Middle left"   => position.middle_left
+        "Middle right"  => position.middle_right
+        "Bottom left"   => position.bottom_left
+        "Bottom center" => position.bottom_center
+        => position.bottom_right
+hmOf(string s, int i) => str.substring(s, i, i + 2) + ":" + str.substring(s, i + 2, i + 4)
+mOf(string s, int i) => int(str.tonumber(str.substring(s, i, i + 2))) * 60 + int(str.tonumber(str.substring(s, i + 2, i + 4)))
+pctS(float v) => na(v) ? "—" : str.tostring(math.round(v)) + "%"
+pxS(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
+xS(float v) => na(v) ? "—" : str.tostring(v, "0.0") + "×"
+addRow(array<string> K, array<string> V, array<string> W, array<string> P, array<color> C, string k, string v, string w, string p, color c) =>
+    K.push(k)
+    V.push(v)
+    W.push(w)
+    P.push(p)
+    C.push(c)
+
+var table TC = na
+if barstate.islast and showCard
+    bool   mob = layoutI == "Mobile"
+    string fnt = mob ? font.family_default : font.family_monospace     // Mobile: the narrower default font
+    if na(TC)
+        TC := table.new(posOf(cardPos), 3, 12, border_width = 0, frame_width = 1, frame_color = color.gray)
+    TC.clear(0, 0, 2, 11)
+    int    mNow   = hour(time, tz) * 60 + minute(time, tz)
+    bool   today  = sbDay == dayCount and not na(sbMid)
+    int    endM   = isBankai ? mOf(nySess, 5) : 1020
+    string endT   = isBankai ? hmOf(nySess, 5) : "16:59"
+    bool   live   = today and mNow >= 570 and mNow < endM
+    bool   lonOK  = not na(sL.o) and sL.day == dayCount and not inCL
+    bool   asiaOK = not na(sA.o) and sA.day == dayCount
+    float  A      = adrD
+    // the midpoint against the open (today), or against price now (before 09:30)
+    float  midN   = today ? sbMid : (oH + oL) / 2
+    float  refO   = today ? sbO : close
+    bool   upN    = midN > refO
+    float  dist   = math.abs(midN - refO)
+    float  dA     = na(A) or A <= 0 ? na : dist / A
+    int    b      = na(dA) ? 2 : distB(dA)
+    float  mins   = today ? math.max(0, mNow - 570) : 0
+    bool   hitOK  = today and midT >= 0 and (not isBankai or mid11)
+    string arrow  = upN ? " ▲ " : " ▼ "
+    // header
+    string pill = not today ? "FORMING" : hitOK ? "✓ MID" : live ? (sbUp ? "LONG" : "SHORT") : "OVER"
+    color  hc   = not today ? color.gray : hitOK ? colMid : (sbUp ? colLong : colShort)
+    string hd0  = isBankai ? (mob ? "BANKAI" : "BANKAI · NY AM") : (mob ? "SHIKAI" : "SHIKAI · ALL DAY")
+    string hd1  = str.format_time(time, mob ? "MM/dd HH:mm" : "MM/dd · HH:mm", tz) + (mob ? "" : " ET")
+    TC.cell(0, 0, hd0, text_color = hdrTx(hc), bgcolor = hc, text_size = cSz, text_halign = text.align_left, text_font_family = fnt)
+    TC.cell(1, 0, hd1, text_color = hdrTx(hc), bgcolor = hc, text_size = cSz, text_halign = text.align_left, text_font_family = fnt)
+    TC.cell(2, 0, pill, text_color = hc, bgcolor = lumOf(hc) > 165 ? #131722 : #ffffff, text_size = cSz, text_halign = text.align_center, text_font_family = fnt, tooltip = "FORMING before 09:30 · LONG / SHORT: the side into the midpoint · ✓ MID once it is reached · OVER when the window ends without it.")
+    array<string> K = array.new<string>()
+    array<string> V = array.new<string>()
+    array<string> W = array.new<string>()
+    array<string> P = array.new<string>()
+    array<color>  C = array.new<color>()
+    color nc = na
+    if not today
+        addRow(K, V, W, P, C, "ON", "H " + pxS(oH) + " · L " + pxS(oL), pxS(oH - oL) + " pts", "The overnight range so far (18:00 → 09:29 ET). Its midpoint is fixed at 09:30.", nc)
+    addRow(K, V, W, P, C, "MID", pxS(midN) + arrow + (na(dA) ? "" : str.tostring(dA, "0.00") + " ADR"), pxS(dist) + (mob ? "" : " pts"), (today ? "The overnight midpoint (18:00–09:29 range) and its distance from the 09:30 open" : "The overnight midpoint so far and its distance from price now") + ", in ADR20 (" + pxS(A) + " pts: the mean 18:00–17:00 range of the last 20 days). ▲ = the midpoint is above: a discount open, LONG into it. ▼ = below: a premium open, SHORT into it.", nc)
+    bool pull = upN and not na(dA) and dA >= 0.1
+    addRow(K, V, W, P, C, "SIDE", upN ? "discount · LONG into mid" : "premium · SHORT into mid", pull ? "pull ✓" : upN ? "near · even" : "no pull", "NQ + ES + RTY 2018–26, 0.1 ADR or more from the open. Discount opens (midpoint above): the midpoint is reached 5–6 points more often than an equal-distance level above the open (by 11:00 53% vs 47%, p 0.002; by 16:59 69% vs 64%, p 0.01; in both periods and on every symbol). Premium opens (midpoint below): no pull, the same as the mirror. Only the long side held out of sample (carry); shorts into a midpoint below the open were negative in 2025–26.", pull ? colLong : nc)
+    // reach: the midpoint against its mirror (the same distance on the other side of the open)
+    float  pM = reachOdds(true, upN, b, mins)
+    float  pR = reachOdds(false, not upN, b, mins)
+    string reachTip = "How often the midpoint was reached by " + endT + " from here (this distance, this time, not reached yet), against its mirror: the same distance on the other side of the open. NQ + ES + RTY 2018–26, steady in both periods and on every symbol. After the touch, going on through vs coming back is a coin flip (49 / 51%): the touch is a target, not a signal." + (isBankai ? " Bankai odds are for an 11:00 stop." : "")
+    string odds = "mid " + pctS(pM) + " · mirror " + pctS(pR)
+    if not today
+        addRow(K, V, W, P, C, "IF OPEN", odds, mob ? endT : "by " + endT, "If the session opened at this price. " + reachTip, nc)
+    else if midT >= 0
+        string hv = "✓ mid " + hhmm(sbT930 + midT * 60000) + " · " + str.tostring(midT) + (mob ? "m" : " min") + (isBankai and not mid11 ? (mob ? " late" : " (after " + endT + ")") : "")
+        addRow(K, V, W, P, C, "REACH", hv, mob ? "" : mirT >= 0 ? "mirror ✓" : live ? "mirror " + pctS(pR) : "", reachTip, hitOK ? colMid : nc)
+    else
+        addRow(K, V, W, P, C, "REACH", live ? odds : "mid not reached", live ? (mob ? endT : "by " + endT) : mob ? "" : mirT >= 0 ? "mirror ✓" : "", reachTip, nc)
+    float mirN = today ? sbMir : 2 * refO - midN
+    addRow(K, V, W, P, C, "MIRROR", pxS(mirN) + (upN ? " below" : " above"), today and mirT >= 0 ? "✓ " + hhmm(sbT930 + mirT * 60000) : "", "The placebo: the same distance from the open as the midpoint, on the other side. Carry (NQ 2018–26): on discount opens a drop to the mirror is the long-side area to watch (+0.1R lean, not proven); on premium opens a pop to the mirror is not a short (−0.24R, t −3.3).", nc)
+    if isBankai
+        bool   wOpen = live and not hitOK and (inPrim or inSec)
+        string wv = not today ? (mob ? "" : "windows ") + hmOf(primWin, 0) + (mob ? " / " : " · ") + hmOf(secWin, 0) : not live ? "program over" : hitOK ? "mid reached · manage" : inPrim ? "primary → " + hmOf(primWin, 5) : inSec ? "secondary → " + hmOf(secWin, 5) : mNow < mOf(primWin, 0) ? "primary at " + hmOf(primWin, 0) : "entries closed"
+        string ww = not today ? "stop " + endT : not live ? "" : mob ? str.tostring(endM - mNow) + "m left" : "stop " + endT + " · " + str.tostring(endM - mNow) + "m"
+        addRow(K, V, W, P, C, "WINDOW", wv, ww, "Bankai: the NY AM program from 09:30 to the hard stop. Entries only in the primary (" + hmOf(primWin, 0) + "–" + hmOf(primWin, 5) + ") and secondary (" + hmOf(secWin, 0) + "–" + hmOf(secWin, 5) + ") windows, shaded on the chart while the midpoint is untouched; flat by " + endT + ".", wOpen ? (sbUp ? colLong : colShort) : nc)
+    // London: high / low taken after 05:00; live odds of the ones not taken yet
+    int    endL = isBankai ? 660 : 1020
+    string lonTip = "The London high and low (02:00–04:59) and when price takes them after 05:00. NQ + ES + RTY 2018–26: high by 11:00 75%, by 16:59 83%; low 71% / 79%; both 48% / 62%; steady in both periods and on every symbol. The odds are live: how often an untaken high or low was taken by " + (isBankai ? "11:00" : "16:59") + " from this time."
+    if lonOK
+        bool  both = not na(lhT) and not na(llT)
+        float pH = oddsAt(isBankai ? L11 : L17, CKL, 2, 0, mNow)
+        float pL = oddsAt(isBankai ? L11 : L17, CKL, 2, 1, mNow)
+        string lw = both ? "both ✓" : mNow >= endL ? "" : "by " + (isBankai ? "11:00 " : "16:59 ") + (na(lhT) ? pctS(pH) : "✓") + " / " + (na(llT) ? pctS(pL) : "✓")
+        // Mobile: the odds in place of the prices (the session candles carry the prices)
+        string hS = na(lhT) ? (mob ? (mNow < endL ? pctS(pH) : "✗") : pxS(sL.h)) : mob ? "✓" : "✓ " + hhmm(lhT)
+        string lS = na(llT) ? (mob ? (mNow < endL ? pctS(pL) : "✗") : pxS(sL.l)) : mob ? "✓" : "✓ " + hhmm(llT)
+        addRow(K, V, W, P, C, "LONDON", "H " + hS + " · L " + lS, mob ? (both or mNow >= endL ? "" : isBankai ? "11:00" : "16:59") : lw, lonTip, nc)
+        if sL.h > sL.l
+            float q = lvlK(sL, 0.25)
+            string q25Tip = isBody ? "The London 25%: a quarter of London's body back from its close. NQ + ES + RTY 2018–26: reached after 05:00 by 16:59 on 96% of days. A reference level, not a hold." : "The London 25%: a quarter of London's high–low range back from its last extreme (" + (legDown(sL) ? "a down leg, so measured up from the low" : "an up leg, so measured down from the high") + "). NQ + ES + RTY 2018–26, after 05:00: the 25% was reached by 11:00 on 91% of days and by 16:59 on 94%; the 37.5% on 90% / 93%; the 50% on 86% / 90%. Steady in both periods and on every symbol. A reference level, not a hold."
+            addRow(K, V, W, P, C, "LDN 25%", (legDown(sL) ? "down leg · " : "up leg · ") + pxS(q), na(q25T) ? "untouched" : "traded ✓ " + hhmm(q25T), q25Tip, nc)
+    else
+        addRow(K, V, W, P, C, "LONDON", "forming 02:00–04:59", "", lonTip, nc)
+    float rA = asiaOK and not na(A) ? (sA.h - sA.l) / (0.26 * A) : na
+    float rL = not na(sL.o) and sL.day == dayCount and not na(A) ? (sL.h - sL.l) / (0.239 * A) : na
+    float rN = not na(sN.o) and sN.day == dayCount and not na(A) ? (sN.h - sN.l) / (0.794 * A) : na
+    addRow(K, V, W, P, C, "RANGES", mob ? "A " + xS(rA) + " L " + xS(rL) + " NY " + xS(rN) : "Asia " + xS(rA) + " · Ldn " + xS(rL) + " · NY " + xS(rN), mob ? "" : "of typical", "Today's session ranges against a typical day's: the median session range in ADR20 units, NQ + ES + RTY 2018–26 (Asia 18:00–23:59 0.26, London 02:00–04:59 0.24, NY 08:00–16:59 0.79), at today's ADR20 (" + pxS(A) + " pts). Sessions still open count so far.", nc)
+    addRow(K, V, W, P, C, "REGIME", lonOK and asiaOK ? regimeOf(sA.h, sA.l, sL.h, sL.l) : "after London (05:00)", "context", "London against Asia, for reading the session candles. No regime gave NY a steady lean in 2018–24 and 2025–26 (NQ); 'Asia engulfs London' leaned to a lower NY close in both (45% vs 51–53%) on small samples. Context, not a signal.", nc)
+    // Mobile: four rows; the rest stays in the tooltips
+    array<string> keep = mob ? (isBankai ? array.from("MID", "IF OPEN", "REACH", "WINDOW", "LONDON") : array.from("MID", "IF OPEN", "REACH", "LONDON", "RANGES")) : K
+    int r = 1
+    for [i, k] in K
+        if keep.includes(k) and r < 12
+            color vc = C.get(i)
+            TC.cell(0, r, k, text_color = cSub, text_size = cSz, text_halign = text.align_left, bgcolor = cBody, text_font_family = fnt, tooltip = P.get(i))
+            TC.cell(1, r, V.get(i), text_color = na(vc) ? cTxt : vc, text_size = cSz, text_halign = text.align_left, bgcolor = cBody, text_font_family = fnt, tooltip = P.get(i))
+            TC.cell(2, r, W.get(i), text_color = na(vc) ? cTxt : vc, text_size = cSz, text_halign = text.align_right, bgcolor = cBody, text_font_family = fnt, tooltip = P.get(i))
+            r += 1
+    TC.set_frame_color(color.new(hc, 30))
